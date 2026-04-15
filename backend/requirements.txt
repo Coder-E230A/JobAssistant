@@ -1,0 +1,38 @@
+# JobAssistant 后端依赖
+
+# Web 框架
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# 数据库
+sqlalchemy>=2.0.0
+asyncpg>=0.29.0
+psycopg2-binary>=2.9.9
+
+# 认证
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# 文件处理
+python-multipart>=0.0.6
+aiofiles>=23.2.1
+
+# 爬虫
+playwright>=1.40.0
+
+# 任务队列 (第二阶段使用)
+celery>=5.3.0
+redis>=5.0.0
+
+# 工具
+python-dotenv>=1.0.0
+httpx>=0.25.0
+
+# 加密
+cryptography>=41.0.0
+
+# 测试
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
