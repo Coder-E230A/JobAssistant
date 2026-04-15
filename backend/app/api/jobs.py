@@ -41,6 +41,105 @@ class JobListResponse(BaseModel):
     items: List[JobResponse]
 
 
+class JobCreate(BaseModel):
+    platform: str
+    platform_job_id: Optional[str] = None
+    title: Optional[str] = None
+    company: Optional[str] = None
+    salary_min: Optional[int] = None
+    salary_max: Optional[int] = None
+    location: Optional[str] = None
+    experience_required: Optional[str] = None
+    education_required: Optional[str] = None
+    jd_content: Optional[str] = None
+    jd_url: Optional[str] = None
+
+
+@router.post("", response_model=JobResponse)
+async def create_job(
+    job_data: JobCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """创建/保存岗位"""
+    # 检查是否已存在相同岗位
+    if job_data.platform_job_id:
+        result = await db.execute(
+            select(Job).where(
+                Job.user_id == current_user.id,
+                Job.platform == job_data.platform,
+                Job.platform_job_id == job_data.platform_job_id
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            # 更新已存在的岗位
+            existing.title = job_data.title
+            existing.company = job_data.company
+            existing.salary_min = job_data.salary_min
+            existing.salary_max = job_data.salary_max
+            existing.location = job_data.location
+            existing.jd_content = job_data.jd_content
+            existing.jd_url = job_data.jd_url
+            await db.commit()
+            await db.refresh(existing)
+            return JobResponse(
+                id=str(existing.id),
+                platform=existing.platform,
+                platform_job_id=existing.platform_job_id,
+                title=existing.title,
+                company=existing.company,
+                salary_min=existing.salary_min,
+                salary_max=existing.salary_max,
+                location=existing.location,
+                experience_required=existing.experience_required,
+                education_required=existing.education_required,
+                jd_content=existing.jd_content,
+                jd_url=existing.jd_url,
+                status=existing.status,
+                applied_at=existing.applied_at,
+                created_at=existing.created_at
+            )
+
+    # 创建新岗位
+    job = Job(
+        user_id=current_user.id,
+        platform=job_data.platform,
+        platform_job_id=job_data.platform_job_id,
+        title=job_data.title,
+        company=job_data.company,
+        salary_min=job_data.salary_min,
+        salary_max=job_data.salary_max,
+        location=job_data.location,
+        experience_required=job_data.experience_required,
+        education_required=job_data.education_required,
+        jd_content=job_data.jd_content,
+        jd_url=job_data.jd_url,
+        status="pending"
+    )
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    return JobResponse(
+        id=str(job.id),
+        platform=job.platform,
+        platform_job_id=job.platform_job_id,
+        title=job.title,
+        company=job.company,
+        salary_min=job.salary_min,
+        salary_max=job.salary_max,
+        location=job.location,
+        experience_required=job.experience_required,
+        education_required=job.education_required,
+        jd_content=job.jd_content,
+        jd_url=job.jd_url,
+        status=job.status,
+        applied_at=job.applied_at,
+        created_at=job.created_at
+    )
+
+
 @router.get("", response_model=JobListResponse)
 async def list_jobs(
     status: Optional[str] = None,
@@ -127,6 +226,32 @@ async def get_job(
         applied_at=job.applied_at,
         created_at=job.created_at
     )
+
+
+@router.post("/{job_id}/apply")
+async def apply_saved_job(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """投递已保存的岗位"""
+    result = await db.execute(
+        select(Job).where(Job.id == job_id, Job.user_id == current_user.id)
+    )
+    job = result.scalar_one_or_none()
+    if not job:
+        raise HTTPException(status_code=404, detail="岗位不存在")
+
+    if job.status == "applied":
+        raise HTTPException(status_code=400, detail="该岗位已投递")
+
+    # 这里需要调用爬虫模块进行实际投递
+    # 暂时只更新状态
+    job.status = "applied"
+    job.applied_at = datetime.utcnow()
+    await db.commit()
+
+    return {"message": "投递成功", "job_id": str(job.id)}
 
 
 @router.delete("/{job_id}")
