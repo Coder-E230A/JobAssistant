@@ -32,6 +32,18 @@ class AccountListResponse(BaseModel):
     items: list[AccountResponse]
 
 
+class CookieImportRequest(BaseModel):
+    """Cookie导入请求"""
+    cookies_json: str
+
+
+class CookieImportResponse(BaseModel):
+    """Cookie导入响应"""
+    success: bool
+    message: str
+    account_id: Optional[str] = None
+
+
 @router.get("", response_model=AccountListResponse)
 async def list_accounts(
     current_user: User = Depends(get_current_user),
@@ -79,6 +91,86 @@ async def get_account_status(
         "status": account.login_status,
         "last_sync": account.last_sync_at
     }
+
+
+@router.post("/{platform}/import-cookies", response_model=CookieImportResponse)
+async def import_cookies(
+    platform: str,
+    request: CookieImportRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    手动导入Cookie绑定账号
+
+    当二维码登录失败时，用户可以手动从浏览器导出Cookie绑定账号
+
+    Cookie格式示例：
+    [
+        {"name": "cookie_name", "value": "cookie_value", "domain": ".zhipin.com", "path": "/"}
+    ]
+    """
+    import json
+
+    # 验证Cookie格式
+    try:
+        cookies = json.loads(request.cookies_json)
+        if not isinstance(cookies, list):
+            return CookieImportResponse(
+                success=False,
+                message="Cookie格式错误：应为JSON数组"
+            )
+
+        # 验证每个Cookie项的基本字段
+        for cookie in cookies:
+            if not isinstance(cookie, dict):
+                return CookieImportResponse(
+                    success=False,
+                    message="Cookie格式错误：每个项应为JSON对象"
+                )
+            if "name" not in cookie or "value" not in cookie:
+                return CookieImportResponse(
+                    success=False,
+                    message="Cookie格式错误：缺少name或value字段"
+                )
+
+    except json.JSONDecodeError:
+        return CookieImportResponse(
+            success=False,
+            message="Cookie格式错误：JSON解析失败"
+        )
+
+    # 查找或创建账号记录
+    result = await db.execute(
+        select(PlatformAccount).where(
+            PlatformAccount.user_id == current_user.id,
+            PlatformAccount.platform == platform
+        )
+    )
+    account = result.scalar_one_or_none()
+
+    if account:
+        account.cookies_encrypted = request.cookies_json
+        account.login_status = "active"
+        account.last_sync_at = datetime.utcnow()
+    else:
+        account = PlatformAccount(
+            user_id=current_user.id,
+            platform=platform,
+            cookies_encrypted=request.cookies_json,
+            login_status="active",
+            last_sync_at=datetime.utcnow()
+        )
+        db.add(account)
+
+    await db.commit()
+    await db.refresh(account)
+
+    return CookieImportResponse(
+        success=True,
+        message="Cookie导入成功，账号已绑定",
+        account_id=str(account.id)
+    )
 
 
 @router.delete("/{account_id}")
