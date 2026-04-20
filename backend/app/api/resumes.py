@@ -429,3 +429,70 @@ async def download_resume(
         media_type=media_type,
         filename=f"{resume.name}.{resume.file_type}"
     )
+
+
+@router.get("/{resume_id}/pdf")
+async def get_resume_pdf(
+    resume_id: str,
+    current_user: User = Depends(get_user_by_token),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    获取简历PDF文件用于预览
+
+    PDF文件直接返回，Word文件转换为PDF后返回
+    使用 token 查询参数认证，便于iframe直接显示
+    """
+    result = await db.execute(
+        select(Resume).where(Resume.id == resume_id, Resume.user_id == current_user.id)
+    )
+    resume = result.scalar_one_or_none()
+    if not resume:
+        raise HTTPException(status_code=404, detail="简历不存在")
+
+    if not resume.file_path or not os.path.exists(resume.file_path):
+        raise HTTPException(status_code=404, detail="简历文件不存在")
+
+    ensure_preview_dir()
+
+    # 根据文件类型处理
+    if resume.file_type == "pdf":
+        # PDF文件直接返回
+        return FileResponse(
+            path=resume.file_path,
+            media_type="application/pdf"
+        )
+
+    elif resume.file_type in ["doc", "docx"]:
+        # Word文件转换为PDF
+        preview_subdir = os.path.join(PREVIEW_DIR, resume_id)
+        if not os.path.exists(preview_subdir):
+            os.makedirs(preview_subdir)
+
+        # 查找已转换的PDF（避免重复转换）
+        pdf_path = os.path.join(preview_subdir, f"{resume_id}.pdf")
+
+        # 如果PDF不存在或源文件更新时间比PDF新，重新转换
+        source_mtime = os.path.getmtime(resume.file_path)
+        if not os.path.exists(pdf_path) or os.path.getmtime(pdf_path) < source_mtime:
+            try:
+                pdf_path = convert_word_to_pdf(resume.file_path, preview_subdir)
+                # LibreOffice生成的文件名可能与预期不同，查找并重命名
+                generated_name = os.path.splitext(os.path.basename(resume.file_path))[0] + ".pdf"
+                generated_path = os.path.join(preview_subdir, generated_name)
+                if os.path.exists(generated_path) and generated_path != pdf_path:
+                    # 重命名为固定名称
+                    os.rename(generated_path, pdf_path)
+            except RuntimeError as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+        if not os.path.exists(pdf_path):
+            raise HTTPException(status_code=500, detail="PDF转换失败")
+
+        return FileResponse(
+            path=pdf_path,
+            media_type="application/pdf"
+        )
+
+    else:
+        raise HTTPException(status_code=400, detail=f"不支持的文件类型: {resume.file_type}")

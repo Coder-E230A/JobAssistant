@@ -56,71 +56,40 @@
       </el-table>
     </el-card>
 
-    <!-- 查看简历对话框 -->
+    <!-- 查看简历对话框 - PDF预览 -->
     <el-dialog
       v-model="showViewDialog"
       :title="currentResume?.name || '简历预览'"
-      width="80%"
-      top="3vh"
+      width="85%"
+      top="2vh"
+      destroy-on-close
     >
-      <div class="resume-viewer" v-if="currentResume" v-loading="loadingPreview">
+      <div class="resume-viewer" v-if="currentResume">
         <!-- 基本信息 -->
         <div class="preview-header">
           <span class="file-info">
             {{ currentResume.name }} ({{ currentResume.file_type?.toUpperCase() }})
           </span>
-          <span class="page-info" v-if="previewData">
-            共 {{ previewData.total_pages }} 页
-          </span>
         </div>
 
-        <!-- 简历图片预览 -->
-        <div class="preview-images" v-if="previewData && previewData.pages.length > 0">
-          <div class="page-navigation" v-if="previewData.total_pages > 1">
-            <el-button-group>
-              <el-button @click="prevPage" :disabled="currentPage <= 1">
-                上一页
-              </el-button>
-              <el-button @click="nextPage" :disabled="currentPage >= previewData.total_pages">
-                下一页
-              </el-button>
-            </el-button-group>
-            <span class="current-page">第 {{ currentPage }} / {{ previewData.total_pages }} 页</span>
-          </div>
+        <!-- PDF预览区域 -->
+        <div class="pdf-container" v-loading="loadingPreview">
+          <iframe
+            v-if="pdfUrl"
+            :src="pdfUrl"
+            class="pdf-iframe"
+            frameborder="0"
+          ></iframe>
 
-          <!-- 图片显示区域 -->
-          <div class="image-container">
-            <img
-              :src="currentPageUrl"
-              :alt="`简历第 ${currentPage} 页`"
-              class="preview-image"
-              @click="openFullImage"
-            />
-          </div>
-
-          <!-- 页面缩略图（多页时显示） -->
-          <div class="page-thumbnails" v-if="previewData.total_pages > 1">
-            <div
-              v-for="page in previewData.pages"
-              :key="page.page_number"
-              class="thumbnail-item"
-              :class="{ active: currentPage === page.page_number }"
-              @click="currentPage = page.page_number"
-            >
-              <img :src="getUrlWithToken(page.image_url)" :alt="`第 ${page.page_number} 页`" class="thumbnail-image" />
-              <span class="thumbnail-label">{{ page.page_number }}</span>
-            </div>
-          </div>
+          <!-- 错误提示 -->
+          <el-alert
+            v-if="previewError"
+            type="error"
+            :title="previewError"
+            show-icon
+            :closable="false"
+          />
         </div>
-
-        <!-- 错误提示 -->
-        <el-alert
-          v-if="previewError"
-          type="error"
-          :title="previewError"
-          show-icon
-          :closable="false"
-        />
       </div>
 
       <template #footer>
@@ -167,7 +136,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { request } from '@/utils/api'
 import { useAuthStore } from '@/stores/auth'
@@ -179,18 +148,6 @@ interface Resume {
   tags: string[]
   is_default: boolean
   created_at: string
-}
-
-interface PreviewPage {
-  page_number: number
-  image_url: string
-}
-
-interface PreviewData {
-  resume_name: string
-  file_type: string
-  total_pages: number
-  pages: PreviewPage[]
 }
 
 const resumes = ref<Resume[]>([])
@@ -207,28 +164,13 @@ const uploadForm = reactive({
   isDefault: false
 })
 
-// 查看简历相关（图片预览）
+// 查看简历相关（PDF预览）
 const showViewDialog = ref(false)
 const currentResume = ref<Resume | null>(null)
-const previewData = ref<PreviewData | null>(null)
-const currentPage = ref(1)
+const pdfUrl = ref('')
 const loadingPreview = ref(false)
 const previewError = ref('')
 const authStore = useAuthStore()
-
-// 计算当前页面的图片URL（添加token参数用于认证）
-const currentPageUrl = computed(() => {
-  if (!previewData.value || !currentResume.value) return ''
-  const page = previewData.value.pages.find(p => p.page_number === currentPage.value)
-  if (!page) return ''
-  return getUrlWithToken(page.image_url)
-})
-
-// 为URL添加token认证参数
-const getUrlWithToken = (url: string) => {
-  const token = authStore.token
-  return `${url}?token=${token}`
-}
 
 const formatDate = (date: string) => {
   return new Date(date).toLocaleString('zh-CN')
@@ -250,43 +192,17 @@ const loadResumes = async () => {
   }
 }
 
-const viewResume = async (resume: Resume) => {
+const viewResume = (resume: Resume) => {
   showViewDialog.value = true
   currentResume.value = resume
   loadingPreview.value = true
-  previewData.value = null
   previewError.value = ''
-  currentPage.value = 1
+  pdfUrl.value = ''
 
-  try {
-    // 获取简历预览图片列表
-    const data = await request.get<PreviewData>(`/resumes/${resume.id}/preview`)
-    previewData.value = data
-  } catch (error: any) {
-    console.error('获取简历预览失败', error)
-    previewError.value = error.response?.data?.detail || '获取预览图片失败，请稍后重试'
-  } finally {
-    loadingPreview.value = false
-  }
-}
-
-const prevPage = () => {
-  if (currentPage.value > 1) {
-    currentPage.value--
-  }
-}
-
-const nextPage = () => {
-  if (previewData.value && currentPage.value < previewData.value.total_pages) {
-    currentPage.value++
-  }
-}
-
-const openFullImage = () => {
-  // 在新窗口打开完整图片
-  if (currentPageUrl.value) {
-    window.open(currentPageUrl.value, '_blank')
-  }
+  // 构建PDF预览URL（添加token参数用于认证）
+  const token = authStore.token
+  pdfUrl.value = `/api/resumes/${resume.id}/pdf?token=${token}`
+  loadingPreview.value = false
 }
 
 const downloadResume = async (resumeId: string | undefined) => {
@@ -376,7 +292,9 @@ onMounted(() => {
 }
 
 .resume-viewer {
-  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  height: calc(80vh - 120px);
 }
 
 .preview-header {
@@ -386,7 +304,7 @@ onMounted(() => {
   padding: 10px 15px;
   background: #f5f7fa;
   border-radius: 8px;
-  margin-bottom: 15px;
+  margin-bottom: 10px;
 }
 
 .file-info {
@@ -394,89 +312,17 @@ onMounted(() => {
   color: #303133;
 }
 
-.page-info {
-  color: #909399;
-}
-
-.preview-images {
-  display: flex;
-  flex-direction: column;
-  gap: 15px;
-}
-
-.page-navigation {
-  display: flex;
-  align-items: center;
-  gap: 15px;
-  padding: 10px 0;
-}
-
-.current-page {
-  color: #606266;
-}
-
-.image-container {
-  display: flex;
-  justify-content: center;
+.pdf-container {
+  flex: 1;
+  min-height: 500px;
   background: #f5f7fa;
   border-radius: 8px;
-  padding: 20px;
-  min-height: 300px;
+  overflow: hidden;
 }
 
-.preview-image {
-  max-width: 100%;
-  max-height: 500px;
-  object-fit: contain;
-  cursor: pointer;
-  border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  transition: transform 0.2s;
-}
-
-.preview-image:hover {
-  transform: scale(1.02);
-}
-
-.page-thumbnails {
-  display: flex;
-  justify-content: center;
-  gap: 10px;
-  padding: 15px 0;
-  overflow-x: auto;
-}
-
-.thumbnail-item {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 8px;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: all 0.2s;
-  border: 2px solid transparent;
-}
-
-.thumbnail-item:hover {
-  background: #f0f2f5;
-}
-
-.thumbnail-item.active {
-  border-color: #409eff;
-  background: #ecf5ff;
-}
-
-.thumbnail-image {
-  width: 60px;
-  height: 80px;
-  object-fit: contain;
-  border-radius: 4px;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
-}
-
-.thumbnail-label {
-  margin-top: 5px;
-  font-size: 12px;
-  color: #606266;
+.pdf-iframe {
+  width: 100%;
+  height: 100%;
+  min-height: 500px;
 }
 </style>
