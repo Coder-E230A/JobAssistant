@@ -124,10 +124,7 @@
               v-model="cookieJson"
               type="textarea"
               :rows="10"
-              placeholder="请输入Cookie JSON格式数据，例如：
-[
-  {\"name\": \"cookie_name\", \"value\": \"cookie_value\", \"domain\": \".zhipin.com\", \"path\": \"/\"}
-]"
+              :placeholder="'请输入Cookie JSON格式数据，例如：\n[\n  {&quot;name&quot;: &quot;cookie_name&quot;, &quot;value&quot;: &quot;cookie_value&quot;, &quot;domain&quot;: &quot;.zhipin.com&quot;, &quot;path&quot;: &quot;/&quot;}\n]'"
             />
           </el-form-item>
         </el-form>
