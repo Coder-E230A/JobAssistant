@@ -117,6 +117,8 @@ async def check_login_status(
 
     # 检查扫码状态
     logged_in = await crawler.check_login()
+    login_status = crawler.get_login_status()
+
     if logged_in:
         # 保存 Cookie 到数据库
         cookies = await crawler.get_cookies()
@@ -151,10 +153,18 @@ async def check_login_status(
             message="登录成功"
         )
 
+    # 返回详细状态
+    status_messages = {
+        "waiting_qrcode": "等待扫码...",
+        "scanned": "已扫码，请在手机上确认登录",
+        "expired": "二维码已过期，请刷新",
+        "error": "登录过程出错"
+    }
+
     return LoginStatusResponse(
         platform="boss",
-        status="waiting_qrcode",
-        message="等待扫码..."
+        status=login_status,
+        message=status_messages.get(login_status, "等待扫码...")
     )
 
 

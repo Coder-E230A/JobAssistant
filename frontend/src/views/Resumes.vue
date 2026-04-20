@@ -12,11 +12,22 @@
       </template>
 
       <el-table :data="resumes" v-loading="loading">
-        <el-table-column prop="name" label="简历名称" />
-        <el-table-column prop="file_type" label="文件类型" />
+        <el-table-column prop="name" label="简历名称">
+          <template #default="{ row }">
+            <el-button type="primary" link @click="viewResume(row)">
+              {{ row.name }}
+            </el-button>
+          </template>
+        </el-table-column>
+        <el-table-column prop="file_type" label="文件类型">
+          <template #default="{ row }">
+            <el-tag>{{ row.file_type?.toUpperCase() || '未知' }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="tags" label="标签">
           <template #default="{ row }">
             <el-tag v-for="tag in row.tags" :key="tag" style="margin-right: 5px">{{ tag }}</el-tag>
+            <span v-if="!row.tags?.length">无标签</span>
           </template>
         </el-table-column>
         <el-table-column prop="is_default" label="默认">
@@ -29,8 +40,11 @@
             {{ formatDate(row.created_at) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="200">
+        <el-table-column label="操作" width="250">
           <template #default="{ row }">
+            <el-button size="small" type="primary" @click="viewResume(row)">
+              查看
+            </el-button>
             <el-button size="small" @click="setDefault(row.id)" v-if="!row.is_default">
               设为默认
             </el-button>
@@ -41,6 +55,81 @@
         </el-table-column>
       </el-table>
     </el-card>
+
+    <!-- 查看简历对话框 -->
+    <el-dialog
+      v-model="showViewDialog"
+      :title="currentResume?.name || '简历预览'"
+      width="80%"
+      top="3vh"
+    >
+      <div class="resume-viewer" v-if="currentResume" v-loading="loadingPreview">
+        <!-- 基本信息 -->
+        <div class="preview-header">
+          <span class="file-info">
+            {{ currentResume.name }} ({{ currentResume.file_type?.toUpperCase() }})
+          </span>
+          <span class="page-info" v-if="previewData">
+            共 {{ previewData.total_pages }} 页
+          </span>
+        </div>
+
+        <!-- 简历图片预览 -->
+        <div class="preview-images" v-if="previewData && previewData.pages.length > 0">
+          <div class="page-navigation" v-if="previewData.total_pages > 1">
+            <el-button-group>
+              <el-button @click="prevPage" :disabled="currentPage <= 1">
+                上一页
+              </el-button>
+              <el-button @click="nextPage" :disabled="currentPage >= previewData.total_pages">
+                下一页
+              </el-button>
+            </el-button-group>
+            <span class="current-page">第 {{ currentPage }} / {{ previewData.total_pages }} 页</span>
+          </div>
+
+          <!-- 图片显示区域 -->
+          <div class="image-container">
+            <img
+              :src="currentPageUrl"
+              :alt="`简历第 ${currentPage} 页`"
+              class="preview-image"
+              @click="openFullImage"
+            />
+          </div>
+
+          <!-- 页面缩略图（多页时显示） -->
+          <div class="page-thumbnails" v-if="previewData.total_pages > 1">
+            <div
+              v-for="page in previewData.pages"
+              :key="page.page_number"
+              class="thumbnail-item"
+              :class="{ active: currentPage === page.page_number }"
+              @click="currentPage = page.page_number"
+            >
+              <img :src="getUrlWithToken(page.image_url)" :alt="`第 ${page.page_number} 页`" class="thumbnail-image" />
+              <span class="thumbnail-label">{{ page.page_number }}</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 错误提示 -->
+        <el-alert
+          v-if="previewError"
+          type="error"
+          :title="previewError"
+          show-icon
+          :closable="false"
+        />
+      </div>
+
+      <template #footer>
+        <el-button @click="downloadResume(currentResume?.id)">
+          下载原文件
+        </el-button>
+        <el-button type="primary" @click="showViewDialog = false">关闭</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 上传对话框 -->
     <el-dialog v-model="showUploadDialog" title="上传简历" width="500px">
@@ -78,9 +167,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { request } from '@/utils/api'
+import { useAuthStore } from '@/stores/auth'
 
 interface Resume {
   id: string
@@ -91,6 +181,18 @@ interface Resume {
   created_at: string
 }
 
+interface PreviewPage {
+  page_number: number
+  image_url: string
+}
+
+interface PreviewData {
+  resume_name: string
+  file_type: string
+  total_pages: number
+  pages: PreviewPage[]
+}
+
 const resumes = ref<Resume[]>([])
 const loading = ref(false)
 const showUploadDialog = ref(false)
@@ -98,11 +200,35 @@ const uploading = ref(false)
 const uploadRef = ref()
 const selectedFile = ref<File | null>(null)
 
+// 上传表单
 const uploadForm = reactive({
   name: '',
   tags: '',
   isDefault: false
 })
+
+// 查看简历相关（图片预览）
+const showViewDialog = ref(false)
+const currentResume = ref<Resume | null>(null)
+const previewData = ref<PreviewData | null>(null)
+const currentPage = ref(1)
+const loadingPreview = ref(false)
+const previewError = ref('')
+const authStore = useAuthStore()
+
+// 计算当前页面的图片URL（添加token参数用于认证）
+const currentPageUrl = computed(() => {
+  if (!previewData.value || !currentResume.value) return ''
+  const page = previewData.value.pages.find(p => p.page_number === currentPage.value)
+  if (!page) return ''
+  return getUrlWithToken(page.image_url)
+})
+
+// 为URL添加token认证参数
+const getUrlWithToken = (url: string) => {
+  const token = authStore.token
+  return `${url}?token=${token}`
+}
 
 const formatDate = (date: string) => {
   return new Date(date).toLocaleString('zh-CN')
@@ -121,6 +247,56 @@ const loadResumes = async () => {
     console.error('获取简历列表失败', error)
   } finally {
     loading.value = false
+  }
+}
+
+const viewResume = async (resume: Resume) => {
+  showViewDialog.value = true
+  currentResume.value = resume
+  loadingPreview.value = true
+  previewData.value = null
+  previewError.value = ''
+  currentPage.value = 1
+
+  try {
+    // 获取简历预览图片列表
+    const data = await request.get<PreviewData>(`/resumes/${resume.id}/preview`)
+    previewData.value = data
+  } catch (error: any) {
+    console.error('获取简历预览失败', error)
+    previewError.value = error.response?.data?.detail || '获取预览图片失败，请稍后重试'
+  } finally {
+    loadingPreview.value = false
+  }
+}
+
+const prevPage = () => {
+  if (currentPage.value > 1) {
+    currentPage.value--
+  }
+}
+
+const nextPage = () => {
+  if (previewData.value && currentPage.value < previewData.value.total_pages) {
+    currentPage.value++
+  }
+}
+
+const openFullImage = () => {
+  // 在新窗口打开完整图片
+  if (currentPageUrl.value) {
+    window.open(currentPageUrl.value, '_blank')
+  }
+}
+
+const downloadResume = async (resumeId: string | undefined) => {
+  if (!resumeId) return
+  try {
+    const token = authStore.token
+    const url = `/api/resumes/${resumeId}/download?token=${token}`
+    window.open(url, '_blank')
+  } catch (error) {
+    ElMessage.error('下载失败')
   }
 }
 
@@ -197,5 +373,110 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.resume-viewer {
+  padding: 10px;
+}
+
+.preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 15px;
+  background: #f5f7fa;
+  border-radius: 8px;
+  margin-bottom: 15px;
+}
+
+.file-info {
+  font-weight: 500;
+  color: #303133;
+}
+
+.page-info {
+  color: #909399;
+}
+
+.preview-images {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.page-navigation {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  padding: 10px 0;
+}
+
+.current-page {
+  color: #606266;
+}
+
+.image-container {
+  display: flex;
+  justify-content: center;
+  background: #f5f7fa;
+  border-radius: 8px;
+  padding: 20px;
+  min-height: 300px;
+}
+
+.preview-image {
+  max-width: 100%;
+  max-height: 500px;
+  object-fit: contain;
+  cursor: pointer;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  transition: transform 0.2s;
+}
+
+.preview-image:hover {
+  transform: scale(1.02);
+}
+
+.page-thumbnails {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  padding: 15px 0;
+  overflow-x: auto;
+}
+
+.thumbnail-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 2px solid transparent;
+}
+
+.thumbnail-item:hover {
+  background: #f0f2f5;
+}
+
+.thumbnail-item.active {
+  border-color: #409eff;
+  background: #ecf5ff;
+}
+
+.thumbnail-image {
+  width: 60px;
+  height: 80px;
+  object-fit: contain;
+  border-radius: 4px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+}
+
+.thumbnail-label {
+  margin-top: 5px;
+  font-size: 12px;
+  color: #606266;
 }
 </style>

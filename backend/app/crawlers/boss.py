@@ -18,12 +18,20 @@ class BossCrawler:
 
     BASE_URL = "https://www.zhipin.com"
 
+    # 登录状态枚举
+    LOGIN_WAITING = "waiting_qrcode"
+    LOGIN_SCANNED = "scanned"
+    LOGIN_SUCCESS = "logged_in"
+    LOGIN_EXPIRED = "expired"
+    LOGIN_ERROR = "error"
+
     def __init__(self):
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
         self.qrcode_path: Optional[str] = None
         self._playwright = None
+        self._login_status: str = self.LOGIN_WAITING
 
     async def _init_browser(self):
         """初始化浏览器"""
@@ -38,23 +46,60 @@ class BossCrawler:
     async def get_qrcode(self) -> Optional[str]:
         """获取登录二维码"""
         await self._init_browser()
+        self._login_status = self.LOGIN_WAITING
 
-        # 访问登录页面
-        await self.page.goto(f"{self.BASE_URL}/web/user/?ka=header-login")
+        try:
+            # 访问登录页面
+            await self.page.goto(f"{self.BASE_URL}/web/user/?ka=header-login", timeout=30000)
 
-        # 等待二维码出现
-        await self.page.wait_for_selector(".login-scan-wrapper", timeout=10000)
+            # 等待页面加载完成
+            await self.page.wait_for_load_state("networkidle", timeout=15000)
 
-        # 截取二维码图片
-        qrcode_element = await self.page.query_selector(".login-scan-wrapper img")
-        if qrcode_element:
+            # 检查是否有安全验证页面
+            current_url = self.page.url
+            if "security-check" in current_url or "verify" in current_url:
+                self._login_status = self.LOGIN_ERROR
+                raise RuntimeError("触发安全验证，请稍后重试或使用Cookie导入方式")
+
+            # 等待二维码容器出现
+            await asyncio.sleep(2)
+
+            # 多种选择器尝试
+            qrcode_selectors = [
+                ".login-scan-wrapper img",
+                ".qrcode-box img",
+                ".scan-wrapper img",
+                "img[src*='qr']"
+            ]
+
+            qrcode_element = None
+            for selector in qrcode_selectors:
+                try:
+                    qrcode_element = await self.page.query_selector(selector)
+                    if qrcode_element:
+                        break
+                except Exception:
+                    continue
+
+            if not qrcode_element:
+                # 如果找不到二维码元素，截取整个登录区域
+                login_wrapper = await self.page.query_selector(".login-scan-wrapper")
+                if login_wrapper:
+                    self.qrcode_path = os.path.join(settings.UPLOAD_DIR, "qrcode.png")
+                    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+                    await login_wrapper.screenshot(path=self.qrcode_path)
+                    return self.qrcode_path
+                raise RuntimeError("无法找到二维码，页面可能已变化")
+
             # 保存二维码图片
             self.qrcode_path = os.path.join(settings.UPLOAD_DIR, "qrcode.png")
             os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
             await qrcode_element.screenshot(path=self.qrcode_path)
             return self.qrcode_path
 
-        return None
+        except Exception as e:
+            self._login_status = self.LOGIN_ERROR
+            raise RuntimeError(f"获取二维码失败: {str(e)}")
 
     async def check_login(self) -> bool:
         """检查是否已登录"""
@@ -62,22 +107,62 @@ class BossCrawler:
             return False
 
         try:
-            # 检查是否跳转到首页或显示用户信息
             await asyncio.sleep(2)
 
-            # 检查登录成功标志
-            user_element = await self.page.query_selector(".nav-figure")
-            if user_element:
+            # 检查当前URL
+            current_url = self.page.url
+
+            # 登录成功后通常会跳转到首页
+            if "web/user" not in current_url and "zhipin.com" in current_url:
+                self._login_status = self.LOGIN_SUCCESS
                 return True
 
-            # 或者检查 URL 变化
-            current_url = self.page.url
-            if "web/user" not in current_url and "zhipin.com" in current_url:
-                return True
+            # 检查登录成功标志（多种选择器）
+            success_selectors = [
+                ".nav-figure",
+                ".user-nav",
+                ".geek-nav",
+                "[class*='user-info']"
+            ]
+
+            for selector in success_selectors:
+                try:
+                    user_element = await self.page.query_selector(selector)
+                    if user_element:
+                        self._login_status = self.LOGIN_SUCCESS
+                        return True
+                except Exception:
+                    continue
+
+            # 检查是否有扫码成功的提示
+            try:
+                scanned_tip = await self.page.query_selector(".scan-success, .login-success")
+                if scanned_tip:
+                    self._login_status = self.LOGIN_SCANNED
+                    # 等待确认登录
+                    await asyncio.sleep(3)
+                    # 再次检查
+                    return await self.check_login()
+            except Exception:
+                pass
+
+            # 检查二维码是否过期
+            try:
+                expired_tip = await self.page.query_selector(".qrcode-expired, .scan-expired")
+                if expired_tip:
+                    self._login_status = self.LOGIN_EXPIRED
+                    return False
+            except Exception:
+                pass
 
             return False
+
         except Exception:
             return False
+
+    def get_login_status(self) -> str:
+        """获取当前登录状态"""
+        return self._login_status
 
     async def get_cookies(self) -> str:
         """获取登录后的 Cookie"""
@@ -92,8 +177,11 @@ class BossCrawler:
         await self._init_browser()
 
         if cookies_str:
-            cookies = json.loads(cookies_str)
-            await self.context.add_cookies(cookies)
+            try:
+                cookies = json.loads(cookies_str)
+                await self.context.add_cookies(cookies)
+            except json.JSONDecodeError:
+                raise RuntimeError("Cookie 格式错误")
 
         await self.page.goto(self.BASE_URL)
 
